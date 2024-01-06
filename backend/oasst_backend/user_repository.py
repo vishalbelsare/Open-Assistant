@@ -1,14 +1,16 @@
 from typing import Optional
 from uuid import UUID
 
+import oasst_backend.models as models
 from oasst_backend.config import settings
 from oasst_backend.models import ApiClient, User
 from oasst_backend.utils.database_utils import CommitMode, managed_tx_method
+from oasst_shared import utils as shared_utils
 from oasst_shared.exceptions import OasstError, OasstErrorCode
 from oasst_shared.schemas import protocol as protocol_schema
 from oasst_shared.utils import utcnow
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, and_, or_
+from sqlmodel import Session, and_, delete, or_, update
 from starlette.status import HTTP_403_FORBIDDEN, HTTP_404_NOT_FOUND
 
 
@@ -70,6 +72,7 @@ class UserRepository:
     def update_user(
         self,
         id: UUID,
+        display_name: Optional[str] = None,
         enabled: Optional[bool] = None,
         notes: Optional[str] = None,
         show_on_leaderboard: Optional[bool] = None,
@@ -85,7 +88,6 @@ class UserRepository:
             raise OasstError("Forbidden", OasstErrorCode.API_CLIENT_NOT_AUTHORIZED, HTTP_403_FORBIDDEN)
 
         user: User = self.db.query(User).filter(User.id == id).first()
-
         if user is None:
             raise OasstError("User not found", OasstErrorCode.USER_NOT_FOUND, HTTP_404_NOT_FOUND)
 
@@ -97,14 +99,18 @@ class UserRepository:
             user.show_on_leaderboard = show_on_leaderboard
         if tos_acceptance:
             user.tos_acceptance_date = utcnow()
+        if display_name is not None:
+            user.display_name = display_name
 
         self.db.add(user)
+
         return user
 
     @managed_tx_method(CommitMode.COMMIT)
     def mark_user_deleted(self, id: UUID) -> None:
         """
         Update a user by global user ID to set deleted flag. Only trusted clients may delete users.
+        User deletion anonymises the data of the user.
 
         Raises:
             OasstError: 403 if untrusted client attempts to delete a user. 404 if user with ID not found.
@@ -118,6 +124,12 @@ class UserRepository:
             raise OasstError("User not found", OasstErrorCode.USER_NOT_FOUND, HTTP_404_NOT_FOUND)
 
         user.deleted = True
+
+        # Anonymise user data
+        user.display_name = shared_utils.DELETED_USER_DISPLAY_NAME
+        # Ensure uniqueness of (username, auth_method, api_client_id) Index
+        user.username = f"{shared_utils.DELETED_USER_ID_PREFIX}{user.id}"
+        user.show_on_leaderboard = False
 
         self.db.add(user)
 
@@ -261,7 +273,6 @@ class UserRepository:
         limit: Optional[int] = 100,
         desc: bool = False,
     ) -> list[User]:
-
         if not self.api_client.trusted:
             if not api_client_id:
                 # Let unprivileged api clients query their own users without api_client_id being set
@@ -322,6 +333,50 @@ class UserRepository:
         return qry.all()
 
     @managed_tx_method(CommitMode.FLUSH)
-    def update_user_last_activity(self, user: User) -> None:
-        user.last_activity_date = utcnow()
+    def update_user_last_activity(self, user: User, update_streak: bool = False) -> None:
+        current_time = utcnow()
+        user.last_activity_date = current_time
+
+        if update_streak:
+            if user.streak_last_day_date is None or user.streak_last_day_date > current_time:
+                # begin new streak
+                user.streak_last_day_date = current_time
+                user.streak_days = 0
+            else:
+                # update streak day count
+                user.streak_days = (current_time - user.streak_last_day_date).days
+
         self.db.add(user)
+
+    @managed_tx_method(CommitMode.FLUSH)
+    def merge_users(self, destination_user_id: UUID, source_user_ids: list[UUID]) -> None:
+        source_user_ids = list(filter(lambda x: x != destination_user_id, source_user_ids))
+        if not source_user_ids:
+            return
+
+        # ensure the destination user exists
+        self.get_user(id=destination_user_id)
+
+        # update rows in tables that have affected users_ids as FK
+        models_to_update = [
+            models.Message,
+            models.MessageRevision,
+            models.MessageReaction,
+            models.MessageEmoji,
+            models.TextLabels,
+            models.Task,
+            models.Journal,
+        ]
+        for table in models_to_update:
+            qry = update(table).where(table.user_id.in_(source_user_ids)).values(user_id=destination_user_id)
+            self.db.execute(qry)
+
+        # delete rows in user stats tables
+        models_to_delete = [models.UserStats, models.TrollStats]
+        for table in models_to_delete:
+            qry = delete(table).where(table.user_id.in_(source_user_ids))
+            self.db.execute(qry)
+
+        # finally delete source users from main user table
+        qry = delete(User).where(User.id.in_(source_user_ids))
+        self.db.execute(qry)

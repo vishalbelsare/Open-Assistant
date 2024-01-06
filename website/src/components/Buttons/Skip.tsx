@@ -8,47 +8,51 @@ import {
   ModalFooter,
   ModalHeader,
   ModalOverlay,
-  Textarea,
   useDisclosure,
 } from "@chakra-ui/react";
-import { useState } from "react";
+import { useTranslation } from "next-i18next";
 
 interface SkipButtonProps extends ButtonProps {
-  onSkip: (reason: string) => void;
+  onSkip: () => void;
+  confirmSkip: boolean;
 }
 
-export const SkipButton = ({ onSkip, ...props }: SkipButtonProps) => {
+export const SkipButton = ({ ...props }: SkipButtonProps) => {
+  const { t } = useTranslation();
   const { isOpen, onOpen: showModal, onClose: closeModal } = useDisclosure();
-  const [value, setValue] = useState("");
 
-  const onSubmit = () => {
-    onSkip(value);
-    setValue("");
+  const onClick = () => {
+    if (props.confirmSkip) {
+      showModal();
+    } else {
+      props.onSkip();
+    }
+  };
+
+  const onConfirmedSkip = () => {
     closeModal();
+    props.onSkip();
   };
 
   return (
     <>
-      <Button size="lg" variant="outline" onClick={showModal} {...props}>
-        Skip
+      <Button size="lg" variant="solid" {...props} onClick={onClick}>
+        {t("skip")}
       </Button>
       <Modal isOpen={isOpen} onClose={closeModal}>
-        <ModalOverlay />
+        <ModalOverlay></ModalOverlay>
         <ModalContent>
-          <ModalHeader>Skip</ModalHeader>
-          <ModalCloseButton />
+          <ModalCloseButton></ModalCloseButton>
+          <ModalHeader>{t("skip")}</ModalHeader>
           <ModalBody>
-            <Textarea
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              resize="none"
-              placeholder="Any feedback on this task?"
-            />
+            <div>{t("tasks:skip_confirmation")}</div>
           </ModalBody>
-
           <ModalFooter>
-            <Button colorScheme="blue" mr={3} onClick={onSubmit}>
-              Send
+            <Button mr={3} onClick={onConfirmedSkip}>
+              {t("yes")}
+            </Button>
+            <Button colorScheme="blue" onClick={closeModal}>
+              {t("no")}
             </Button>
           </ModalFooter>
         </ModalContent>

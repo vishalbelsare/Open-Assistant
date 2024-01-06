@@ -7,18 +7,23 @@ import { useEffect } from "react";
 import { CallToAction } from "src/components/CallToAction";
 import { Faq } from "src/components/Faq";
 import { Hero } from "src/components/Hero";
-import { getTransparentHeaderLayout } from "src/components/Layout";
-export { getDefaultStaticProps as getStaticProps } from "src/lib/default_static_props";
+export { getDefaultServerSideProps as getStaticProps } from "src/lib/defaultServerSideProps";
+import { useBrowserConfig } from "src/hooks/env/BrowserEnv";
 
 const Home = () => {
+  const { BYE } = useBrowserConfig();
   const router = useRouter();
   const { status } = useSession();
   const { t } = useTranslation();
   useEffect(() => {
+    if (BYE) {
+      router.push("/bye");
+    }
+
     if (status === "authenticated") {
       router.push("/dashboard");
     }
-  }, [router, status]);
+  }, [router, status, BYE]);
 
   return (
     <>
@@ -33,7 +38,5 @@ const Home = () => {
     </>
   );
 };
-
-Home.getLayout = getTransparentHeaderLayout;
 
 export default Home;
